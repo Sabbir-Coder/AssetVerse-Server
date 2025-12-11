@@ -47,7 +47,6 @@ const verifyJWT = async (req, res, next) => {
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
     version: ServerApiVersion.v1,
-    strict: true,
     deprecationErrors: true,
   },
 });
@@ -57,6 +56,7 @@ async function run() {
     const assetCollection = db.collection("assets");
     const userCollection = db.collection("users");
     const assetRequestCollection = db.collection("assetRequests");
+    const assignedAssetCollection = db.collection("assignedAssets");
 
     // save asset in db
     app.post("/assets", async (req, res) => {
@@ -126,11 +126,6 @@ async function run() {
       res.send(result);
     });
 
-    // -----------------------------------
-    // -----------------------------------
-    // -----------------------------------
-
-    // Get all asset requests for a specific HR (company)
     // Get all asset requests for a specific HR (company)
     app.get("/asset-requests", async (req, res) => {
       try {
@@ -189,19 +184,19 @@ async function run() {
         );
 
         // Add asset to employee's asset list
-        await userCollection.updateOne(
-          { email: request.requesterEmail },
-          {
-            $push: {
-              assets: {
-                assetId: request.assetId,
-                productName: request.productName,
-                productType: request.productType,
-                dateAssigned: new Date(),
-              },
-            },
-          }
-        );
+        await assignedAssetCollection.insertOne({
+          assetId: request.assetId,
+          assetName: request.productName,
+          assetType: request.productType,
+          employeeEmail: request.requesterEmail,
+          photoURL: asset.photoURL || asset.image,
+          employeeName: request.requesterName,
+          hrEmail: request.HrEmail,
+          companyName: request.companyName,
+          assignedDate: new Date().toLocaleString(),
+          returnDate: null,
+          status: "Assigned",
+        });
 
         res.send({ message: "Request approved successfully" });
       } catch (err) {
@@ -241,23 +236,202 @@ async function run() {
     });
 
     // Get assets for a specific employee
-app.get("/users/:email/assets", async (req, res) => {
-  try {
-    const email = req.params.email;
-    const user = await userCollection.findOne({ email }, { projection: { assets: 1, _id: 0 } });
+    app.get("/users/:email/assets", async (req, res) => {
+      try {
+        const email = req.params.email;
 
-    if (!user) {
-      return res.status(404).send({ message: "Employee not found" });
-    }
+        // Find all requests (Approved or Rejected) for this employee
+        const requests = await assetRequestCollection
+          .find({
+            requesterEmail: email,
+            requestStatus: { $in: ["Approved", "Rejected"] },
+          })
+          .toArray();
 
-    // If user has no assets, return empty array
-    res.send(user.assets || []);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Server error" });
-  }
-});
+        if (!requests.length) {
+          return res.send([]);
+        }
 
+        // Map each request to include full asset details
+        const fullAssets = await Promise.all(
+          requests.map(async (reqItem) => {
+            const asset = await assetCollection.findOne({
+              _id: new ObjectId(reqItem.assetId),
+            });
+
+            return {
+              assetId: reqItem.assetId,
+              productName: reqItem.productName,
+              productType: reqItem.productType,
+              requestDate: reqItem.requestDate,
+              approvalDate: reqItem.approvalDate || null,
+              status: reqItem.requestStatus, // Approved or Rejected
+              assetImage: asset?.photoURL || asset?.image,
+              companyName: asset?.companyName,
+              description: asset?.description,
+              returnable: asset?.returnable,
+              quantity: asset?.quantity,
+            };
+          })
+        );
+
+        res.send(fullAssets);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get all assets assigned by a specific HR
+    app.get("/assigned-assets", verifyJWT, async (req, res) => {
+      try {
+        const hrEmail = req.query.hrEmail; // frontend should send HR's email
+
+        if (!hrEmail) {
+          return res.status(400).send({ message: "HR email is required" });
+        }
+
+        // Fetch assigned assets where hrEmail matches
+        const assignedAssets = await assignedAssetCollection
+          .find({ hrEmail })
+          .toArray();
+
+        res.send(assignedAssets);
+      } catch (err) {
+        console.error("Error fetching assigned assets:", err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get list of companies
+    app.get("/companies", async (req, res) => {
+      try {
+        const companies = await userCollection.distinct("companyName");
+        res.send(companies);
+      } catch (err) {
+        console.error("Error fetching companies:", err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get employees of a selected company
+    app.get("/company/:companyName/employees", async (req, res) => {
+      try {
+        const companyName = req.params.companyName;
+
+        const employees = await userCollection
+          .find(
+            { companyName },
+            {
+              projection: {
+                password: 0,
+                assets: 0,
+              },
+            }
+          )
+          .toArray();
+
+        res.send(employees);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get upcoming birthdays for the current month
+    app.get("/company/:companyName/birthdays", async (req, res) => {
+      try {
+        const companyName = req.params.companyName;
+        const currentMonth = new Date().getMonth() + 1;
+
+        const birthdays = await userCollection
+          .find(
+            {
+              companyName,
+              dateOfBirth: { $exists: true },
+            },
+            {
+              projection: {
+                name: 1,
+                email: 1,
+                photoURL: 1,
+                position: 1,
+                dateOfBirth: 1,
+              },
+            }
+          )
+          .toArray();
+
+        const upcoming = birthdays.filter((emp) => {
+          const month = new Date(emp.dateOfBirth).getMonth() + 1;
+          return month === currentMonth;
+        });
+
+        res.send(upcoming);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Get total assets assigned to each employee for a specific HR
+    app.get("/hr/employee-assets", verifyJWT, async (req, res) => {
+      try {
+        const hrEmail = req.query.hrEmail;
+        if (!hrEmail)
+          return res.status(400).send({ message: "HR email is required" });
+
+        // Fetch all assigned assets for this HR
+        const assignedAssets = await assignedAssetCollection
+          .find({ hrEmail })
+          .toArray();
+
+        // Aggregate by employee
+        const employeeMap = {};
+
+        assignedAssets.forEach((asset) => {
+          if (!employeeMap[asset.employeeEmail]) {
+            employeeMap[asset.employeeEmail] = {
+              employeeName: asset.employeeName,
+              employeeEmail: asset.employeeEmail,
+              photoURL: asset.photoURL,
+              assignedDate: asset.assignedDate, // ✔ FIXED HERE
+              assets: [],
+            };
+          }
+
+          employeeMap[asset.employeeEmail].assets.push(asset);
+        });
+
+        // Convert map to array
+        const employeesWithAssets = Object.values(employeeMap).map((emp) => ({
+          ...emp,
+          totalAssets: emp.assets.length,
+        }));
+
+        res.send(employeesWithAssets);
+      } catch (err) {
+        console.error("Error fetching employee assets:", err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // Update/Put Asset
+    app.put("/assets/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const updatedAsset = req.body;
+
+        const result = await assetCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedAsset }
+        );
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).json({ message: "Failed to update the asset", error });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
