@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
 const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
@@ -55,6 +55,7 @@ async function run() {
   try {
     const db = client.db("AssetVerseDB");
     const assetCollection = db.collection("assets");
+    const userCollection = db.collection("users");
 
     // save asset in db
     app.post("/assets", async (req, res) => {
@@ -63,10 +64,18 @@ async function run() {
       res.send(result);
     });
 
-    // get all assets from db
+    // get hr assets from db
     app.get("/assets", async (req, res) => {
-      const result = await assetCollection.find().toArray();
+      const email = req.query.email;
+      const filter = email ? { "hr.email": email } : {};
+      const result = await assetCollection.find(filter).toArray();
       res.send(result);
+    });
+
+    // get asset for the employee all assets
+    app.get("/all-assets", async (req, res) => {
+      const data = await assetCollection.find().toArray();
+      res.send(data);
     });
 
     // Delete a asset
@@ -76,9 +85,28 @@ async function run() {
       res.send(result);
     });
 
+    // save user in db
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
 
+    // get all users from db
+    app.get("/users", async (req, res) => {
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
 
-    
+    // get user role by email
+    app.get("/users/role/:email", async (req, res) => {
+      const email = req.params.email;
+      const user = await userCollection.findOne({ email });
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
+      res.send({ role: user.role });
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
