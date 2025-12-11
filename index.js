@@ -56,6 +56,7 @@ async function run() {
     const db = client.db("AssetVerseDB");
     const assetCollection = db.collection("assets");
     const userCollection = db.collection("users");
+    const assetRequestCollection = db.collection("assetRequests");
 
     // save asset in db
     app.post("/assets", async (req, res) => {
@@ -107,6 +108,156 @@ async function run() {
       }
       res.send({ role: user.role });
     });
+
+    // get one user by email
+    app.get("/users/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await userCollection.findOne({ email });
+      res.send(result);
+    });
+
+    // assets requests
+    app.post("/asset-requests", async (req, res) => {
+      const assetRequest = req.body;
+      const id = req.params.id;
+      console.log(assetRequest);
+
+      const result = await assetRequestCollection.insertOne(assetRequest);
+      res.send(result);
+    });
+
+    // -----------------------------------
+    // -----------------------------------
+    // -----------------------------------
+
+    // Get all asset requests for a specific HR (company)
+    // Get all asset requests for a specific HR (company)
+    app.get("/asset-requests", async (req, res) => {
+      try {
+        const hrEmail = req.query.HrEmail; // match frontend query
+        if (!hrEmail)
+          return res.status(400).send({ message: "HR Email is required" });
+
+        const requests = await assetRequestCollection
+          .find({ HrEmail: hrEmail })
+          .toArray();
+
+        res.send(requests);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server Error" });
+      }
+    });
+
+    // Approve asset request
+    app.patch("/asset-requests/:id/approve", async (req, res) => {
+      try {
+        const requestId = req.params.id;
+        const request = await assetRequestCollection.findOne({
+          _id: new ObjectId(requestId),
+        });
+        if (!request)
+          return res.status(404).send({ message: "Request not found" });
+        if (request.requestStatus !== "Pending")
+          return res.status(400).send({ message: "Request already processed" });
+
+        // Deduct quantity from asset
+        const asset = await assetCollection.findOne({
+          _id: new ObjectId(request.assetId),
+        });
+        if (!asset) return res.status(404).send({ message: "Asset not found" });
+        if (asset.quantity < 1)
+          return res
+            .status(400)
+            .send({ message: "Insufficient asset quantity" });
+
+        await assetCollection.updateOne(
+          { _id: new ObjectId(request.assetId) },
+          { $inc: { quantity: -1 } }
+        );
+
+        // Update request status to Approved
+        await assetRequestCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          {
+            $set: {
+              requestStatus: "Approved",
+              approvalDate: new Date(),
+              processedBy: request.HrEmail,
+            },
+          }
+        );
+
+        // Add asset to employee's asset list
+        await userCollection.updateOne(
+          { email: request.requesterEmail },
+          {
+            $push: {
+              assets: {
+                assetId: request.assetId,
+                productName: request.productName,
+                productType: request.productType,
+                dateAssigned: new Date(),
+              },
+            },
+          }
+        );
+
+        res.send({ message: "Request approved successfully" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server Error" });
+      }
+    });
+
+    // Reject asset request
+    app.patch("/asset-requests/:id/reject", async (req, res) => {
+      try {
+        const requestId = req.params.id;
+        const request = await assetRequestCollection.findOne({
+          _id: new ObjectId(requestId),
+        });
+        if (!request)
+          return res.status(404).send({ message: "Request not found" });
+        if (request.requestStatus !== "Pending")
+          return res.status(400).send({ message: "Request already processed" });
+
+        await assetRequestCollection.updateOne(
+          { _id: new ObjectId(requestId) },
+          {
+            $set: {
+              requestStatus: "Rejected",
+              approvalDate: new Date(),
+              processedBy: request.HrEmail,
+            },
+          }
+        );
+
+        res.send({ message: "Request rejected successfully" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server Error" });
+      }
+    });
+
+    // Get assets for a specific employee
+app.get("/users/:email/assets", async (req, res) => {
+  try {
+    const email = req.params.email;
+    const user = await userCollection.findOne({ email }, { projection: { assets: 1, _id: 0 } });
+
+    if (!user) {
+      return res.status(404).send({ message: "Employee not found" });
+    }
+
+    // If user has no assets, return empty array
+    res.send(user.assets || []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
