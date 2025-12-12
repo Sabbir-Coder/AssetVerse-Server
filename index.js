@@ -2,6 +2,9 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(
+  `${process.env.STRIPE_SECRET_KEY}`
+);
 const admin = require("firebase-admin");
 const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
@@ -19,9 +22,10 @@ app.use(
     origin: [
       "http://localhost:5173",
       "http://localhost:5174",
-      "https://b12-m11-session.web.app",
+      "https://assets-verse.netlify.app",
     ],
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     optionSuccessStatus: 200,
   })
 );
@@ -78,12 +82,40 @@ async function run() {
       const data = await assetCollection.find().toArray();
       res.send(data);
     });
-
-    // Delete a asset
+    // Delete an asset from ALL collections
     app.delete("/assets/:id", async (req, res) => {
       const id = req.params.id;
-      const result = await assetCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
+
+      const session = client.startSession();
+
+      try {
+        await session.withTransaction(async () => {
+          // Delete from assets collection
+          await assetCollection.deleteOne(
+            { _id: new ObjectId(id) },
+            { session }
+          );
+
+          // Delete all asset requests for this asset
+          await assetRequestCollection.deleteMany(
+            { assetId: id }, // assetId is stored as string in assetRequests
+            { session }
+          );
+
+          // Delete assignedAssets containing this asset
+          await assignedAssetCollection.deleteMany(
+            { assetId: id }, // stored as string
+            { session }
+          );
+        });
+
+        res.send({ message: "Asset deleted from all collections" });
+      } catch (err) {
+        console.error("Error deleting asset:", err);
+        res.status(500).send({ message: "Failed to delete asset", error: err });
+      } finally {
+        await session.endSession();
+      }
     });
 
     // save user in db
@@ -422,16 +454,85 @@ async function run() {
         const id = req.params.id;
         const updatedAsset = req.body;
 
-        const result = await assetCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updatedAsset }
-        );
+        const session = client.startSession();
 
-        res.send(result);
+        await session.withTransaction(async () => {
+          // 1. Update asset in main collection
+          await assetCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: updatedAsset },
+            { session }
+          );
+
+          // 2. Sync fields in assignedAssets
+          await assignedAssetCollection.updateMany(
+            { assetId: id },
+            {
+              $set: {
+                assetName: updatedAsset.productName,
+                assetType: updatedAsset.productType,
+                photoURL: updatedAsset.photoURL || updatedAsset.image,
+              },
+            },
+            { session }
+          );
+
+          // 3. Sync fields in assetRequests
+          await assetRequestCollection.updateMany(
+            { assetId: id },
+            {
+              $set: {
+                productName: updatedAsset.productName,
+                productType: updatedAsset.productType,
+              },
+            },
+            { session }
+          );
+        });
+
+        res.send({ message: "Asset updated in all collections" });
       } catch (error) {
+        console.error(error);
         res.status(500).json({ message: "Failed to update the asset", error });
       }
     });
+
+    // Get single asset by ID
+    app.get("/assets/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!id)
+          return res.status(400).send({ message: "Asset ID is required" });
+
+        const asset = await assetCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!asset) return res.status(404).send({ message: "Asset not found" });
+
+        res.send(asset);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+
+// payment related apis
+app.post('/create-checkout-session',async(req,res)=>{
+  const paymentInfo=req.body;
+   const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+        price: '{{PRICE_ID}}',
+        quantity: 1,
+      },
+    ],
+    
+    mode: 'payment',
+    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+  })
+})
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
