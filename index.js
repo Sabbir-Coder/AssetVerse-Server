@@ -520,7 +520,7 @@ async function run() {
       const amount = Number(paymentInfo.price) * 100;
       const session = await stripe.checkout.sessions.create({
         line_items: [
-          {       
+          {
             price_data: {
               currency: "USD",
               unit_amount: amount,
@@ -536,12 +536,12 @@ async function run() {
         metadata: {
           packageId: paymentInfo.packageId,
         },
+        customer_email: paymentInfo.hrEmail,
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
       console.log(session);
-      res.send({url: session.url})
-      
+      res.send({ url: session.url });
     });
 
     // get packages info
@@ -553,6 +553,28 @@ async function run() {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await packagesCollection.findOne(query);
+      res.send(result);
+    });
+
+    // most requested assets
+    app.get("/most-requested-assets", async (req, res) => {
+      const result = await assetRequestCollection
+        .aggregate([
+          {
+            $group: {
+              _id: "$productName", // group by asset
+              totalRequests: { $sum: 1 },
+            },
+          },
+          {
+            $sort: { totalRequests: -1 }, // most requested first
+          },
+          {
+            $limit: 5, // top 5 assets
+          },
+        ])
+        .toArray();
+
       res.send(result);
     });
 
