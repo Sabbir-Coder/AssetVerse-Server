@@ -2,9 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const stripe = require("stripe")(
-  `${process.env.STRIPE_SECRET_KEY}`
-);
+const stripe = require("stripe")(`${process.env.STRIPE_SECRET_KEY}`);
 const admin = require("firebase-admin");
 const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
@@ -61,6 +59,7 @@ async function run() {
     const userCollection = db.collection("users");
     const assetRequestCollection = db.collection("assetRequests");
     const assignedAssetCollection = db.collection("assignedAssets");
+    const packagesCollection = db.collection("packages");
 
     // save asset in db
     app.post("/assets", async (req, res) => {
@@ -515,24 +514,47 @@ async function run() {
       }
     });
 
+    // payment related apis
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = Number(paymentInfo.price) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {       
+            price_data: {
+              currency: "USD",
+              unit_amount: amount,
+              product_data: {
+                name: paymentInfo.name,
+              },
+            },
+            quantity: 1,
+          },
+        ],
 
-// payment related apis
-app.post('/create-checkout-session',async(req,res)=>{
-  const paymentInfo=req.body;
-   const session = await stripe.checkout.sessions.create({
-    line_items: [
-      {
-        // Provide the exact Price ID (for example, price_1234) of the product you want to sell
-        price: '{{PRICE_ID}}',
-        quantity: 1,
-      },
-    ],
-    
-    mode: 'payment',
-    success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
-  })
-})
+        mode: "payment",
+        metadata: {
+          packageId: paymentInfo.packageId,
+        },
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+      console.log(session);
+      res.send({url: session.url})
+      
+    });
 
+    // get packages info
+    app.get("/packages", async (req, res) => {
+      const packages = await packagesCollection.find().toArray();
+      res.send(packages);
+    });
+    app.get("/packages/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await packagesCollection.findOne(query);
+      res.send(result);
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
