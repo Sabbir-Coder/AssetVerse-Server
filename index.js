@@ -128,6 +128,7 @@ async function run() {
     // save user in db
     app.post("/users", async (req, res) => {
       const user = req.body;
+
       const result = await userCollection.insertOne(user);
       res.send(result);
     });
@@ -158,7 +159,7 @@ async function run() {
     // assets requests
     app.post("/asset-requests", async (req, res) => {
       const assetRequest = req.body;
-      const id = req.params.id; 
+      const id = req.params.id;
 
       const result = await assetRequestCollection.insertOne(assetRequest);
       res.send(result);
@@ -186,30 +187,88 @@ async function run() {
     app.patch("/asset-requests/:id/approve", async (req, res) => {
       try {
         const requestId = req.params.id;
+
+        /* --------------------------------
+       1. Get request
+    --------------------------------- */
         const request = await assetRequestCollection.findOne({
           _id: new ObjectId(requestId),
         });
+
         if (!request)
           return res.status(404).send({ message: "Request not found" });
+
         if (request.requestStatus !== "Pending")
           return res.status(400).send({ message: "Request already processed" });
 
-        // Deduct quantity from asset
-        const asset = await assetCollection.findOne({
-          _id: new ObjectId(request.assetId),
+        /* --------------------------------
+       2. Get HR
+    --------------------------------- */
+        const hr = await userCollection.findOne({ email: request.HrEmail });
+
+        if (!hr) return res.status(404).send({ message: "HR not found" });
+
+
+        /* --------------------------------
+       3. Check if employee already exists
+    --------------------------------- */
+        const existingEmployee = await assignedAssetCollection.findOne({
+          hrEmail: request.HrEmail,
+          employeeEmail: request.requesterEmail,
         });
+
+        const isNewEmployee = !existingEmployee;
+
+        if (isNewEmployee && hr.currentEmployees >= hr.employeeLimit) {
+          return res.status(403).send({
+            message: "Employee limit reached. Upgrade your package.",
+            action: "UPGRADE_REQUIRED",
+            limit: hr.employeeLimit,
+            current: hr.currentEmployees,
+          });
+        }
+
+        /* --------------------------------
+       4. SAFE assetId handling (FIX)
+    --------------------------------- */
+        let assetObjectId;
+        try {
+          assetObjectId =
+            typeof request.assetId === "string"
+              ? new ObjectId(request.assetId)
+              : request.assetId;
+        } catch {
+          return res.status(400).send({ message: "Invalid asset ID" });
+        }
+
+        const asset = await assetCollection.findOne({
+          _id: assetObjectId,
+        });
+
         if (!asset) return res.status(404).send({ message: "Asset not found" });
-        if (asset.quantity < 1)
+
+        /* --------------------------------
+       5. Quantity check (FIX)
+    --------------------------------- */
+        const availableQty = Number(asset.quantity);
+
+        if (availableQty < 1) {
           return res
             .status(400)
             .send({ message: "Insufficient asset quantity" });
+        }
 
+        /* --------------------------------
+       6. Deduct asset quantity
+    --------------------------------- */
         await assetCollection.updateOne(
-          { _id: new ObjectId(request.assetId) },
+          { _id: assetObjectId },
           { $inc: { quantity: -1 } }
         );
 
-        // Update request status to Approved
+        /* --------------------------------
+       7. Approve request
+    --------------------------------- */
         await assetRequestCollection.updateOne(
           { _id: new ObjectId(requestId) },
           {
@@ -221,27 +280,39 @@ async function run() {
           }
         );
 
-        console.log('requester email name.........',request);
-        // Add asset to employee's asset list
+        
+        /* --------------------------------
+       8. Assign asset
+    --------------------------------- */
         await assignedAssetCollection.insertOne({
-          assetId: request.assetId,
+          assetId: assetObjectId.toString(), // keep consistent
           assetName: request.productName,
           assetType: request.productType,
           employeeEmail: request.requesterEmail,
+          employeeName: request.requesterName,
           requesterPhoto: request.requesterPhoto,
           photoURL: asset.photoURL || asset.image,
-          employeeName: request.requesterName,
           hrEmail: request.HrEmail,
           companyName: request.companyName,
-          assignedDate: new Date().toLocaleString(),
+          assignedDate: new Date(),
           returnDate: null,
           status: "Assigned",
         });
 
+        /* --------------------------------
+       9. Increment employee count (once)
+    --------------------------------- */
+        if (isNewEmployee) {
+          await userCollection.updateOne(
+            { email: request.HrEmail },
+            { $inc: { currentEmployees: 1 } }
+          );
+        }
+
         res.send({ message: "Request approved successfully" });
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Server Error" });
+      } catch (error) {
+        console.error("Approve error:", error);
+        res.status(500).send({ message: "Server error" });
       }
     });
 
@@ -439,7 +510,7 @@ async function run() {
               assignedDate: asset.assignedDate,
               assets: [],
             };
-          }      
+          }
 
           employeeMap[asset.employeeEmail].assets.push(asset);
         });
