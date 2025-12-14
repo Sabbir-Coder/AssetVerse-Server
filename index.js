@@ -80,7 +80,12 @@ async function run() {
     app.get("/assets", async (req, res) => {
       const email = req.query.email;
       const filter = email ? { "hr.email": email } : {};
-      const result = await assetCollection.find(filter).toArray();
+      const { limit = 0, skip = 0 } = req.query;
+      const result = await assetCollection
+        .find(filter)
+        .limit(Number(limit))
+        .skip(Number(skip))
+        .toArray();
       res.send(result);
     });
 
@@ -208,7 +213,6 @@ async function run() {
 
         if (!hr) return res.status(404).send({ message: "HR not found" });
 
-
         /* --------------------------------
        3. Check if employee already exists
     --------------------------------- */
@@ -280,7 +284,6 @@ async function run() {
           }
         );
 
-        
         /* --------------------------------
        8. Assign asset
     --------------------------------- */
@@ -739,6 +742,55 @@ async function run() {
         .toArray();
 
       res.send(result);
+    });
+
+    // remove employee from company
+    app.delete("/hr/remove-employee", verifyJWT, async (req, res) => {
+      const { hrEmail, employeeEmail } = req.body;
+
+      // HR can only act on own company
+      if (req.tokenEmail !== hrEmail) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      const session = client.startSession();
+
+      try {
+        await session.withTransaction(async () => {
+          // 1. Check if employee exists under this HR
+          const exists = await assignedAssetCollection.findOne(
+            { hrEmail, employeeEmail },
+            { session }
+          );
+
+          if (!exists) {
+            throw new Error("Employee not found under this company");
+          }
+
+          // 2. Remove employee from this company (unassign assets)
+          await assignedAssetCollection.deleteMany(
+            { hrEmail, employeeEmail },
+            { session }
+          );
+
+          // 3. Decrement HR employee count
+          await userCollection.updateOne(
+            { email: hrEmail },
+            { $inc: { currentEmployees: -1 } },
+            { session }
+          );
+        });
+
+        res.send({
+          success: true,
+          message: "Employee removed from company successfully",
+        });
+      } catch (error) {
+        console.error("Remove employee error:", error);
+        res.status(500).send({ message: error.message });
+      } finally {
+        await session.endSession();
+      }
     });
 
     // Send a ping to confirm a successful connection
