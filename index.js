@@ -641,6 +641,7 @@ async function run() {
           return res.status(400).send({ message: "Session ID missing" });
         }
 
+        // Retrieve Stripe session
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
         if (session.payment_status !== "paid") {
@@ -648,6 +649,15 @@ async function run() {
         }
 
         const { hrEmail, packageName } = session.metadata;
+
+        // Check if payment for this session already exists
+        const existingPayment = await paymentsCollection.findOne({ sessionId });
+        if (existingPayment) {
+          return res.send({
+            success: true,
+            transactionId: existingPayment.transactionId,
+          });
+        }
 
         const selectedPackage = await packagesCollection.findOne({
           name: packageName,
@@ -659,6 +669,7 @@ async function run() {
 
         const transactionId = generateTransactionId();
 
+        // Update user subscription
         await userCollection.updateOne(
           { email: hrEmail },
           {
@@ -671,6 +682,7 @@ async function run() {
           }
         );
 
+        // Insert payment record (only once)
         await paymentsCollection.insertOne({
           hrEmail,
           packageName,
@@ -679,6 +691,7 @@ async function run() {
           transactionId,
           paymentDate: new Date(),
           status: "completed",
+          sessionId, // store sessionId to prevent duplicates
         });
 
         res.send({ success: true, transactionId });
