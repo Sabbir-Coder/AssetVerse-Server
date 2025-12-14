@@ -8,6 +8,13 @@ const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
+
+const generateTransactionId = () => {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+  return `TXN-${date}-${random}`;
+};
+
 const serviceAccount = JSON.parse(decoded);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -60,6 +67,7 @@ async function run() {
     const assetRequestCollection = db.collection("assetRequests");
     const assignedAssetCollection = db.collection("assignedAssets");
     const packagesCollection = db.collection("packages");
+    const paymentsCollection = db.collection("payments");
 
     // save asset in db
     app.post("/assets", async (req, res) => {
@@ -150,8 +158,7 @@ async function run() {
     // assets requests
     app.post("/asset-requests", async (req, res) => {
       const assetRequest = req.body;
-      const id = req.params.id;
-      console.log(assetRequest);
+      const id = req.params.id; 
 
       const result = await assetRequestCollection.insertOne(assetRequest);
       res.send(result);
@@ -214,12 +221,14 @@ async function run() {
           }
         );
 
+        console.log('requester email name.........',request);
         // Add asset to employee's asset list
         await assignedAssetCollection.insertOne({
           assetId: request.assetId,
           assetName: request.productName,
           assetType: request.productType,
           employeeEmail: request.requesterEmail,
+          requesterPhoto: request.requesterPhoto,
           photoURL: asset.photoURL || asset.image,
           employeeName: request.requesterName,
           hrEmail: request.HrEmail,
@@ -426,10 +435,11 @@ async function run() {
               employeeName: asset.employeeName,
               employeeEmail: asset.employeeEmail,
               photoURL: asset.photoURL,
-              assignedDate: asset.assignedDate, // ✔ FIXED HERE
+              employeePhoto: asset.requesterPhoto,
+              assignedDate: asset.assignedDate,
               assets: [],
             };
-          }
+          }      
 
           employeeMap[asset.employeeEmail].assets.push(asset);
         });
@@ -518,6 +528,7 @@ async function run() {
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
       const amount = Number(paymentInfo.price) * 100;
+
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -525,23 +536,104 @@ async function run() {
               currency: "USD",
               unit_amount: amount,
               product_data: {
-                name: paymentInfo.name,
+                name: paymentInfo.packageName,
               },
             },
             quantity: 1,
           },
         ],
-
         mode: "payment",
+
         metadata: {
-          packageId: paymentInfo.packageId,
+          hrEmail: paymentInfo.hrEmail,
+          packageName: paymentInfo.packageName,
         },
+
         customer_email: paymentInfo.hrEmail,
-        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+
+        // IMPORTANT: include session_id
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
-      console.log(session);
+
       res.send({ url: session.url });
+    });
+
+    app.post("/confirm-payment", verifyJWT, async (req, res) => {
+      try {
+        const { sessionId } = req.body;
+
+        if (!sessionId) {
+          return res.status(400).send({ message: "Session ID missing" });
+        }
+
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        if (session.payment_status !== "paid") {
+          return res.status(400).send({ message: "Payment not completed" });
+        }
+
+        const { hrEmail, packageName } = session.metadata;
+
+        const selectedPackage = await packagesCollection.findOne({
+          name: packageName,
+        });
+
+        if (!selectedPackage) {
+          return res.status(404).send({ message: "Package not found" });
+        }
+
+        const transactionId = generateTransactionId();
+
+        await userCollection.updateOne(
+          { email: hrEmail },
+          {
+            $set: {
+              package: packageName,
+              employeeLimit: selectedPackage.employeeLimit,
+              subscriptionStatus: "Active",
+              subscriptionDate: new Date(),
+            },
+          }
+        );
+
+        await paymentsCollection.insertOne({
+          hrEmail,
+          packageName,
+          employeeLimit: selectedPackage.employeeLimit,
+          amount: session.amount_total / 100,
+          transactionId,
+          paymentDate: new Date(),
+          status: "completed",
+        });
+
+        res.send({ success: true, transactionId });
+      } catch (error) {
+        console.error("Confirm payment error:", error);
+        res.status(500).send({ message: "Payment confirmation failed" });
+      }
+    });
+
+    app.get("/payments", verifyJWT, async (req, res) => {
+      const email = req.query.email;
+
+      if (req.tokenEmail !== email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      const payments = await paymentsCollection
+        .find({ hrEmail: email })
+        .sort({ paymentDate: -1 })
+        .project({
+          transactionId: 1,
+          paymentDate: 1,
+          status: 1,
+          amount: 1,
+          packageName: 1,
+        })
+        .toArray();
+
+      res.send(payments);
     });
 
     // get packages info
