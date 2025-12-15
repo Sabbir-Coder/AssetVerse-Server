@@ -70,30 +70,46 @@ async function run() {
     const paymentsCollection = db.collection("payments");
 
     // save asset in db
-    app.post("/assets", async (req, res) => {
-      const asset = req.body;
-      const result = await assetCollection.insertOne(asset);
-      res.send(result);
-    });
+ app.post("/users", async (req, res) => {
+  const user = req.body;
+
+  if (user.dateOfBirth) {
+    user.dateOfBirth = new Date(user.dateOfBirth);
+  }
+
+  const result = await userCollection.insertOne(user);
+  res.send(result);
+});
+
 
     // get hr assets from db
     app.get("/assets", async (req, res) => {
       const email = req.query.email;
       const filter = email ? { "hr.email": email } : {};
-      const { limit = 0, skip = 0 } = req.query;
-      const result = await assetCollection
-        .find(filter)
-        .limit(Number(limit))
-        .skip(Number(skip))
-        .toArray();
+      const result = await assetCollection.find(filter).toArray();
       res.send(result);
     });
 
-    // get asset for the employee all assets
-    app.get("/all-assets", async (req, res) => {
-      const data = await assetCollection.find().toArray();
-      res.send(data);
-    });
+// get asset for the employee all assets with pagination
+app.get("/all-assets", async (req, res) => {
+  const page = Number(req.query.page) || 1;
+  const limit = Number(req.query.limit) || 9;
+  const skip = (page - 1) * limit;
+
+  const total = await assetCollection.countDocuments();
+
+  const data = await assetCollection
+    .find()
+    .skip(skip)
+    .limit(limit)
+    .toArray();
+
+  res.send({
+    total,
+    assets: data,
+  });
+});
+
     // Delete an asset from ALL collections
     app.delete("/assets/:id", async (req, res) => {
       const id = req.params.id;
