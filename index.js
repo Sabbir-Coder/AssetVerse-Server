@@ -44,7 +44,7 @@ const verifyJWT = async (req, res, next) => {
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.tokenEmail = decoded.email;
-    console.log(decoded);
+    // console.log(decoded);
     next();
   } catch (err) {
     console.log(err);
@@ -69,49 +69,84 @@ async function run() {
     const packagesCollection = db.collection("packages");
     const paymentsCollection = db.collection("payments");
 
+    // Make sure verifyJWT runs first to decode the token
+    const verifyHR = async (req, res, next) => {
+      try {
+        const email = req.tokenEmail; // comes from verifyJWT
+        if (!email) return res.status(401).send({ message: "Unauthorized Access!" });
+
+        // Fetch user from MongoDB
+        const user = await userCollection.findOne({ email });
+        if (!user) return res.status(404).send({ message: "User not found" });
+
+        // Check role
+        if (user.role !== "hr") {
+          return res.status(403).send({ message: "Forbidden: HR access only" });
+        }
+
+        // Attach user info to request if needed
+        req.user = user;
+
+        next(); // continue to the route
+      } catch (err) {
+        console.error("verifyHR error:", err);
+        res.status(500).send({ message: "Server error", err });
+      }
+    };
+
+
+
+
+
     // save asset in db
- app.post("/users", async (req, res) => {
-  const user = req.body;
+    app.post("/users", async (req, res) => {
+      const user = req.body;
 
-  if (user.dateOfBirth) {
-    user.dateOfBirth = new Date(user.dateOfBirth);
-  }
+      if (user.dateOfBirth) {
+        user.dateOfBirth = new Date(user.dateOfBirth);
+      }
 
-  const result = await userCollection.insertOne(user);
-  res.send(result);
-});
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
 
+    // save asset in db
+    app.post("/assets", verifyJWT, verifyHR, async (req, res) => {
+      const asset = req.body;
+      const result = await assetCollection.insertOne(asset);
+      res.send(result);
+    });
 
     // get hr assets from db
-    app.get("/assets", async (req, res) => {
+    app.get("/assets", verifyJWT, async (req, res) => {
       const email = req.query.email;
       const filter = email ? { "hr.email": email } : {};
       const result = await assetCollection.find(filter).toArray();
       res.send(result);
     });
 
-// get asset for the employee all assets with pagination
-app.get("/all-assets", async (req, res) => {
-  const page = Number(req.query.page) || 1;
-  const limit = Number(req.query.limit) || 9;
-  const skip = (page - 1) * limit;
+    // get asset for the employee all assets with pagination
+    app.get("/all-assets", verifyJWT, async (req, res) => {
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 9;
+      const skip = (page - 1) * limit;
 
-  const total = await assetCollection.countDocuments();
+      const total = await assetCollection.countDocuments();
 
-  const data = await assetCollection
-    .find()
-    .skip(skip)
-    .limit(limit)
-    .toArray();
+      const data = await assetCollection
+        .find()
+        .skip(skip)
+        .limit(limit)
+        .toArray();
 
-  res.send({
-    total,
-    assets: data,
-  });
-});
+      res.send({
+        total,
+        assets: data,
+      });
+    });
 
     // Delete an asset from ALL collections
-    app.delete("/assets/:id", async (req, res) => {
+    app.delete("/assets/:id", verifyJWT, verifyHR, async (req, res) => {
       const id = req.params.id;
 
       const session = client.startSession();
@@ -146,22 +181,16 @@ app.get("/all-assets", async (req, res) => {
       }
     });
 
-    // save user in db
-    app.post("/users", async (req, res) => {
-      const user = req.body;
 
-      const result = await userCollection.insertOne(user);
-      res.send(result);
-    });
 
     // get all users from db
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyJWT, async (req, res) => {
       const result = await userCollection.find().toArray();
       res.send(result);
     });
 
     // get user role by email
-    app.get("/users/role/:email", async (req, res) => {
+    app.get("/users/role/:email", verifyJWT,  async (req, res) => {
       const email = req.params.email;
       const user = await userCollection.findOne({ email });
       if (!user) {
@@ -171,14 +200,14 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // get one user by email
-    app.get("/users/:email", async (req, res) => {
+    app.get("/users/:email", verifyJWT,  async (req, res) => {
       const email = req.params.email;
       const result = await userCollection.findOne({ email });
       res.send(result);
     });
 
     // assets requests
-    app.post("/asset-requests", async (req, res) => {
+    app.post("/asset-requests", verifyJWT,  async (req, res) => {
       const assetRequest = req.body;
       const id = req.params.id;
 
@@ -187,7 +216,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get all asset requests for a specific HR (company)
-    app.get("/asset-requests", async (req, res) => {
+    app.get("/asset-requests", verifyJWT, verifyHR, async (req, res) => {
       try {
         const hrEmail = req.query.HrEmail; // match frontend query
         if (!hrEmail)
@@ -205,7 +234,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Approve asset request
-    app.patch("/asset-requests/:id/approve", async (req, res) => {
+    app.patch("/asset-requests/:id/approve", verifyJWT, verifyHR, async (req, res) => {
       try {
         const requestId = req.params.id;
 
@@ -336,7 +365,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Reject asset request
-    app.patch("/asset-requests/:id/reject", async (req, res) => {
+    app.patch("/asset-requests/:id/reject", verifyJWT, verifyHR, async (req, res) => {
       try {
         const requestId = req.params.id;
         const request = await assetRequestCollection.findOne({
@@ -366,7 +395,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get assets for a specific employee
-    app.get("/users/:email/assets", async (req, res) => {
+    app.get("/users/:email/assets", verifyJWT, async (req, res) => {
       try {
         const email = req.params.email;
 
@@ -413,7 +442,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get all assets assigned by a specific HR
-    app.get("/assigned-assets", verifyJWT, async (req, res) => {
+    app.get("/assigned-assets", verifyJWT,  async (req, res) => {
       try {
         const hrEmail = req.query.hrEmail; // frontend should send HR's email
 
@@ -434,7 +463,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get list of companies
-    app.get("/companies", async (req, res) => {
+    app.get("/companies", verifyJWT,  async (req, res) => {
       try {
         const companies = await userCollection.distinct("companyName");
         res.send(companies);
@@ -445,7 +474,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get employees of a selected company
-    app.get("/company/:companyName/employees", async (req, res) => {
+    app.get("/company/:companyName/employees", verifyJWT,  async (req, res) => {
       try {
         const companyName = req.params.companyName;
 
@@ -469,7 +498,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get upcoming birthdays for the current month
-    app.get("/company/:companyName/birthdays", async (req, res) => {
+    app.get("/company/:companyName/birthdays",  verifyJWT, async (req, res) => {
       try {
         const companyName = req.params.companyName;
         const currentMonth = new Date().getMonth() + 1;
@@ -505,7 +534,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get total assets assigned to each employee for a specific HR
-    app.get("/hr/employee-assets", verifyJWT, async (req, res) => {
+    app.get("/hr/employee-assets", verifyJWT,  async (req, res) => {
       try {
         const hrEmail = req.query.hrEmail;
         if (!hrEmail)
@@ -548,7 +577,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Update/Put Asset
-    app.put("/assets/:id", async (req, res) => {
+    app.put("/assets/:id", verifyJWT, verifyHR, async (req, res) => {
       try {
         const id = req.params.id;
         const updatedAsset = req.body;
@@ -597,7 +626,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // Get single asset by ID
-    app.get("/assets/:id", async (req, res) => {
+    app.get("/assets/:id", verifyJWT, verifyHR, async (req, res) => {
       try {
         const id = req.params.id;
         if (!id)
@@ -615,7 +644,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // payment related apis
-    app.post("/create-checkout-session", async (req, res) => {
+    app.post("/create-checkout-session", verifyJWT, verifyHR, async (req, res) => {
       const paymentInfo = req.body;
       const amount = Number(paymentInfo.price) * 100;
 
@@ -649,7 +678,7 @@ app.get("/all-assets", async (req, res) => {
       res.send({ url: session.url });
     });
 
-    app.post("/confirm-payment", verifyJWT, async (req, res) => {
+    app.post("/confirm-payment", verifyJWT, verifyHR, async (req, res) => {
       try {
         const { sessionId } = req.body;
 
@@ -717,7 +746,7 @@ app.get("/all-assets", async (req, res) => {
       }
     });
 
-    app.get("/payments", verifyJWT, async (req, res) => {
+    app.get("/payments", verifyJWT, verifyHR, async (req, res) => {
       const email = req.query.email;
 
       if (req.tokenEmail !== email) {
@@ -740,11 +769,11 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // get packages info
-    app.get("/packages", async (req, res) => {
+    app.get("/packages", verifyJWT, verifyHR, async (req, res) => {
       const packages = await packagesCollection.find().toArray();
       res.send(packages);
     });
-    app.get("/packages/:id", async (req, res) => {
+    app.get("/packages/:id", verifyJWT, verifyHR, async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
       const result = await packagesCollection.findOne(query);
@@ -752,7 +781,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // most requested assets
-    app.get("/most-requested-assets", async (req, res) => {
+    app.get("/most-requested-assets", verifyJWT, verifyHR, async (req, res) => {
       const result = await assetRequestCollection
         .aggregate([
           {
@@ -774,7 +803,7 @@ app.get("/all-assets", async (req, res) => {
     });
 
     // remove employee from company
-    app.delete("/hr/remove-employee", verifyJWT, async (req, res) => {
+    app.delete("/hr/remove-employee", verifyJWT, verifyHR, async (req, res) => {
       const { hrEmail, employeeEmail } = req.body;
 
       // HR can only act on own company
