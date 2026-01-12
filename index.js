@@ -29,7 +29,7 @@ app.use(
       "http://localhost:5174",
       "https://assets-verse.netlify.app",
     ],
-    credentials: true,
+    credentials: false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     optionSuccessStatus: 200,
   })
